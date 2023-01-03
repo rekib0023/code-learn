@@ -152,7 +152,7 @@ def signup():
         )
     is_validated = Validator().validate_user(**user)
     if is_validated is not True:
-        return dict(message="Invalid data", data=None, error=is_validated), 400
+        raise HttpException("Invalid data", status_code=400, payload=is_validated)
     if User.query.filter_by(email=user["email"]).first():
         raise HttpException(
             "Conflict",
@@ -197,7 +197,7 @@ def login():
         raise HttpException(
             "Unauthorized", status_code=401, payload="Invalid email or password"
         )
-    return createJWT(user.as_dict(), os.environ.get("JWT_SECRET"), True), 200
+    return jsonify(createJWT(user.as_dict(), os.environ.get("JWT_SECRET"), True)), 200
 
 
 @server.route("/validate", methods=["POST"])
