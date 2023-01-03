@@ -3,7 +3,7 @@ import os
 import re
 
 import jwt
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
@@ -85,7 +85,7 @@ class Validator:
             }
         if not 3 <= len(args["username"]) <= 30:
             return {"name": "Username must be between 3 and 30 characters"}
-        if args["roles"] not in ["student", 'instructor']:
+        if args["roles"] not in ["student", "instructor"]:
             return {"roles": "Roles must be either student or instructor"}
         return True
 
@@ -103,6 +103,29 @@ class Validator:
         return True
 
 
+class HttpException(Exception):
+    status_code = 400
+
+    def __init__(self, message, status_code=None, payload=None):
+        Exception.__init__(self)
+        self.message = message
+        if status_code is not None:
+            self.status_code = status_code
+        self.payload = payload
+
+    def to_dict(self):
+        rv = dict({"error": self.payload or {}})
+        rv["message"] = self.message
+        return rv
+
+
+@server.errorhandler(HttpException)
+def handle_http_exception(error):
+    response = jsonify(error.to_dict())
+    response.status_code = error.status_code
+    return response
+
+
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(200), unique=True, nullable=False)
@@ -113,33 +136,33 @@ class User(db.Model):
     roles = db.Column(db.String(200), nullable=False)
 
     def as_dict(self):
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        return {
+            c.name: getattr(self, c.name)
+            for c in self.__table__.columns
+            if c.name != "password_hash"
+        }
 
 
 @server.route("/signup", methods=["POST"])
 def signup():
     user = request.json
     if not user:
-        return {
-            "message": "Please provide user details",
-            "data": None,
-            "error": "Bad request",
-        }, 400
+        raise HttpException(
+            "Bad request", status_code=400, payload="Please provide user details"
+        )
     is_validated = Validator().validate_user(**user)
     if is_validated is not True:
         return dict(message="Invalid data", data=None, error=is_validated), 400
     if User.query.filter_by(email=user["email"]).first():
-        return {
-            "message": "User already exists",
-            "error": "Conflict",
-            "data": None,
-        }, 409
+        raise HttpException(
+            "Conflict",
+            status_code=409,
+            payload="User already exists with this email address",
+        )
     if User.query.filter_by(username=user["username"]).first():
-        return {
-            "message": "Username is taken",
-            "error": "Conflict",
-            "data": None,
-        }, 409
+        raise HttpException(
+            "Conflict", status_code=409, payload="Username already taken"
+        )
 
     new_user = User(
         email=user["email"],
@@ -147,34 +170,33 @@ def signup():
         first_name=user["first_name"],
         last_name=user["last_name"],
         username=user["username"],
-        roles=user['roles']
+        roles=user["roles"],
     )
     db.session.add(new_user)
     db.session.commit()
-    return jsonify(createJWT(new_user.as_dict(), os.environ.get("JWT_SECRET"), True)), 201
+    return (
+        jsonify(createJWT(new_user.as_dict(), os.environ.get("JWT_SECRET"), True)),
+        201,
+    )
 
 
 @server.route("/login", methods=["POST"])
 def login():
     auth = request.authorization
     if not auth:
-        return {
-            "message": "Please provide user credentials",
-            "data": None,
-            "error": "Bad request",
-        }, 400
+        raise HttpException(
+            "Unauthorized", status_code=401, payload="Please provide user credentials"
+        )
     email, password = auth["username"], auth["password"]
     validator = Validator()
     is_validated = validator.validate_email_and_password(email, password)
     if is_validated is not True:
-        return dict(message="Invalid data", data=None, error=is_validated), 400
+        raise HttpException("Bad request", status_code=400, payload=is_validated)
     user = User.query.filter_by(email=email).first()
     if not user or not check_password_hash(user.password_hash, password):
-        return {
-            "message": "Invalid email or password",
-            "data": None,
-            "error": "Invalid Credentials",
-        }, 401
+        raise HttpException(
+            "Unauthorized", status_code=401, payload="Invalid email or password"
+        )
     return createJWT(user.as_dict(), os.environ.get("JWT_SECRET"), True), 200
 
 
@@ -182,18 +204,16 @@ def login():
 def validate():
     encoded_jwt = request.headers["Authorization"]
     if not encoded_jwt:
-        return {
-            "message": "Please provide bearer token",
-            "data": None,
-            "error": "Bad request",
-        }, 400
+        raise HttpException(
+            "Unauthorized", status_code=401, payload="Please provide bearer token"
+        )
     encoded_jwt = encoded_jwt.split(" ")[1]
     try:
         decoded = jwt.decode(
             encoded_jwt, os.environ.get("JWT_SECRET"), algorithms=["HS256"]
         )
     except Exception as e:
-        return {"message": e, "data": None, "error": "Unauthorized"}, 403
+        raise HttpException("Unauthorized", status_code=401, payload=e)
     return decoded, 200
 
 
