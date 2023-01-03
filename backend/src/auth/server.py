@@ -3,7 +3,7 @@ import os
 import re
 
 import jwt
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
@@ -44,21 +44,37 @@ class Validator:
 
     def validate_user(self, **args):
         """User Validator"""
-        if not args.get("email") or not args.get("password") or not args.get("name"):
+        if (
+            not args.get("email")
+            or not args.get("password")
+            or not args.get("first_name")
+            or not args.get("last_name")
+            or not args.get("username")
+            or not args.get("roles")
+        ):
             return {
                 "email": "Email is required",
                 "password": "Password is required",
-                "name": "Name is required",
+                "first_name": "First name is required",
+                "last_name": "Last name is required",
+                "username": "Username is required",
+                "roles": "Roles is required",
             }
-        if (
-            not isinstance(args.get("name"), str)
-            or not isinstance(args.get("email"), str)
-            or not isinstance(args.get("password"), str)
+        if not (
+            isinstance(args.get("first_name"), str)
+            or isinstance(args.get("last_name"), str)
+            or isinstance(args.get("username"), str)
+            or isinstance(args.get("email"), str)
+            or isinstance(args.get("password"), str)
+            or isinstance(args.get("roles"), str)
         ):
             return {
                 "email": "Email must be a string",
                 "password": "Password must be a string",
-                "name": "Name must be a string",
+                "username": "Username must be a string",
+                "first_name": "First name must be a string",
+                "last_name": "Last name must be a string",
+                "roles": "Roles must be a string",
             }
         if not self.validate_email(args.get("email")):
             return {"email": "Email is invalid"}
@@ -67,8 +83,10 @@ class Validator:
                 "password": "Password is invalid, Should be atleast 8 characters with \
                     upper and lower case letters, numbers and special characters"
             }
-        if not 2 <= len(args["name"].split(" ")) <= 30:
-            return {"name": "Name must be between 2 and 30 words"}
+        if not 3 <= len(args["username"]) <= 30:
+            return {"name": "Username must be between 3 and 30 characters"}
+        if args["roles"] not in ["student", 'instructor']:
+            return {"roles": "Roles must be either student or instructor"}
         return True
 
     def validate_email_and_password(self, email, password):
@@ -89,6 +107,13 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(200), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), unique=True, nullable=False)
+    first_name = db.Column(db.String(200), nullable=False)
+    last_name = db.Column(db.String(200), nullable=False)
+    username = db.Column(db.String(200), unique=True, nullable=False)
+    roles = db.Column(db.String(200), nullable=False)
+
+    def as_dict(self):
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
 
 
 @server.route("/signup", methods=["POST"])
@@ -103,20 +128,30 @@ def signup():
     is_validated = Validator().validate_user(**user)
     if is_validated is not True:
         return dict(message="Invalid data", data=None, error=is_validated), 400
-    user.pop("name")
     if User.query.filter_by(email=user["email"]).first():
         return {
             "message": "User already exists",
             "error": "Conflict",
             "data": None,
         }, 409
+    if User.query.filter_by(username=user["username"]).first():
+        return {
+            "message": "Username is taken",
+            "error": "Conflict",
+            "data": None,
+        }, 409
 
     new_user = User(
-        email=user["email"], password_hash=generate_password_hash(user["password"])
+        email=user["email"],
+        password_hash=generate_password_hash(user["password"]),
+        first_name=user["first_name"],
+        last_name=user["last_name"],
+        username=user["username"],
+        roles=user['roles']
     )
     db.session.add(new_user)
     db.session.commit()
-    return createJWT(user["email"], os.environ.get("JWT_SECRET"), True), 201
+    return jsonify(createJWT(new_user.as_dict(), os.environ.get("JWT_SECRET"), True)), 201
 
 
 @server.route("/login", methods=["POST"])
@@ -140,7 +175,7 @@ def login():
             "data": None,
             "error": "Invalid Credentials",
         }, 401
-    return createJWT(email, os.environ.get("JWT_SECRET"), True), 200
+    return createJWT(user.as_dict(), os.environ.get("JWT_SECRET"), True), 200
 
 
 @server.route("/validate", methods=["POST"])
@@ -162,10 +197,10 @@ def validate():
     return decoded, 200
 
 
-def createJWT(email, secret, authz):
+def createJWT(user, secret, authz):
     return jwt.encode(
         {
-            "email": email,
+            "user": user,
             "exp": datetime.datetime.utcnow() + datetime.timedelta(days=1),
             "iat": datetime.datetime.utcnow(),
             "admin": authz,
